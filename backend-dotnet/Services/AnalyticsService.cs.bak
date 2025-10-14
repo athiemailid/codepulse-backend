@@ -1,0 +1,329 @@
+using CodePulseApi.Data;
+using CodePulseApi.DTOs;
+using Microsoft.EntityFrameworkCore;
+
+namespace CodePulseApi.Services;
+
+public class AnalyticsService : IAnalyticsService
+{
+    private readonly CodePulseDbContext _context;
+    private readonly ILogger<AnalyticsService> _logger;
+
+    public AnalyticsService(CodePulseDbContext context, ILogger<AnalyticsService> logger)
+    {
+        _context = context;
+        _logger = logger;
+    }
+
+    public async Task<DashboardMetricsDto> GetDashboardMetricsAsync()
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            var startOfWeek = now.AddDays(-(int)now.DayOfWeek);
+            var startOfMonth = new DateTime(now.Year, now.Month, 1);
+
+            var metrics = new DashboardMetricsDto
+            {
+                TotalRepositories = await _context.Repositories.CountAsync(r => r.IsActive),
+                TotalEngineers = await _context.Engineers.CountAsync(e => e.IsActive),
+                TotalPullRequests = await _context.PullRequests.CountAsync(),
+                TotalCommits = await _context.Commits.CountAsync(),
+                TotalReviews = await _context.Reviews.CountAsync(),
+                
+                // Week metrics
+                PullRequestsThisWeek = await _context.PullRequests
+                    .CountAsync(pr => pr.CreatedAt >= startOfWeek),
+                CommitsThisWeek = await _context.Commits
+                    .CountAsync(c => c.CreatedAt >= startOfWeek),
+                ReviewsThisWeek = await _context.Reviews
+                    .CountAsync(r => r.CreatedAt >= startOfWeek),
+                
+                // Month metrics
+                PullRequestsThisMonth = await _context.PullRequests
+                    .CountAsync(pr => pr.CreatedAt >= startOfMonth),
+                CommitsThisMonth = await _context.Commits
+                    .CountAsync(c => c.CreatedAt >= startOfMonth),
+                ReviewsThisMonth = await _context.Reviews
+                    .CountAsync(r => r.CreatedAt >= startOfMonth),
+                
+                // Average scores
+                AverageReviewScore = await _context.Reviews.AverageAsync(r => (double?)r.Score) ?? 0,
+                AverageReviewScoreThisWeek = await _context.Reviews
+                    .Where(r => r.CreatedAt >= startOfWeek)
+                    .AverageAsync(r => (double?)r.Score) ?? 0,
+                AverageReviewScoreThisMonth = await _context.Reviews
+                    .Where(r => r.CreatedAt >= startOfMonth)
+                    .AverageAsync(r => (double?)r.Score) ?? 0,
+                
+                LastUpdated = DateTime.UtcNow
+            };
+
+            return metrics;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving dashboard metrics");
+            throw;
+        }
+    }
+
+    public async Task<IEnumerable<ActivityTrendDto>> GetActivityTrendAsync(int days = 30)
+    {
+        try
+        {
+            var endDate = DateTime.UtcNow.Date;
+            var startDate = endDate.AddDays(-days);
+
+            var trends = new List<ActivityTrendDto>();
+
+            for (var date = startDate; date <= endDate; date = date.AddDays(1))
+            {
+                var nextDate = date.AddDays(1);
+
+                var trend = new ActivityTrendDto
+                {
+                    Date = date,
+                    Commits = await _context.Commits
+                        .CountAsync(c => c.CreatedAt >= date && c.CreatedAt < nextDate),
+                    PullRequests = await _context.PullRequests
+                        .CountAsync(pr => pr.CreatedAt >= date && pr.CreatedAt < nextDate),
+                    Reviews = await _context.Reviews
+                        .CountAsync(r => r.CreatedAt >= date && r.CreatedAt < nextDate),
+                    AverageReviewScore = await _context.Reviews
+                        .Where(r => r.CreatedAt >= date && r.CreatedAt < nextDate)
+                        .AverageAsync(r => (double?)r.Score) ?? 0
+                };
+
+                trends.Add(trend);
+            }
+
+            return trends;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving activity trends for {Days} days", days);
+            throw;
+        }
+    }
+
+    public async Task<IEnumerable<RepositoryAnalyticsDto>> GetRepositoryAnalyticsAsync()
+    {
+        try
+        {
+            var analytics = await _context.Repositories
+                .Where(r => r.IsActive)
+                .Select(r => new RepositoryAnalyticsDto
+                {
+                    RepositoryId = r.Id,
+                    RepositoryName = r.Name,
+                    TotalCommits = r.Commits.Count,
+                    TotalPullRequests = r.PullRequests.Count,
+                    TotalReviews = r.PullRequests.SelectMany(pr => pr.Reviews).Count(),
+                    TotalEngineers = r.Engineers.Count(e => e.IsActive),
+                    AverageReviewScore = r.PullRequests
+                        .SelectMany(pr => pr.Reviews)
+                        .Average(rev => (double?)rev.Score) ?? 0,
+                    TotalLinesChanged = r.Commits.Sum(c => c.LinesAdded + c.LinesDeleted),
+                    LastActivityDate = r.Commits
+                        .OrderByDescending(c => c.CreatedAt)
+                        .Select(c => c.CreatedAt)
+                        .FirstOrDefault(),
+                    CommitsThisWeek = r.Commits
+                        .Count(c => c.CreatedAt >= DateTime.UtcNow.AddDays(-7)),
+                    PullRequestsThisWeek = r.PullRequests
+                        .Count(pr => pr.CreatedAt >= DateTime.UtcNow.AddDays(-7)),
+                    ReviewsThisWeek = r.PullRequests
+                        .SelectMany(pr => pr.Reviews)
+                        .Count(rev => rev.CreatedAt >= DateTime.UtcNow.AddDays(-7))
+                })
+                .OrderByDescending(a => a.TotalCommits)
+                .ToListAsync();
+
+            return analytics;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving repository analytics");
+            throw;
+        }
+    }
+
+    public async Task<IEnumerable<EngineerPerformanceDto>> GetEngineerPerformanceAsync(int? repositoryId = null)
+    {
+        try
+        {
+            var query = _context.Engineers
+                .Where(e => e.IsActive)
+                .AsQueryable();
+
+            if (repositoryId.HasValue)
+            {
+                query = query.Where(e => e.RepositoryId == repositoryId.Value);
+            }
+
+            var performance = await query
+                .Select(e => new EngineerPerformanceDto
+                {
+                    EngineerId = e.Id,
+                    EngineerName = e.Name,
+                    RepositoryName = e.Repository.Name,
+                    TotalCommits = e.Commits.Count,
+                    TotalPullRequests = e.PullRequests.Count,
+                    TotalReviews = e.PullRequests.SelectMany(pr => pr.Reviews).Count(),
+                    AverageReviewScore = e.PullRequests
+                        .Where(pr => pr.Reviews.Any())
+                        .SelectMany(pr => pr.Reviews)
+                        .Average(r => (double?)r.Score) ?? 0,
+                    TotalLinesAdded = e.Commits.Sum(c => c.LinesAdded),
+                    TotalLinesDeleted = e.Commits.Sum(c => c.LinesDeleted),
+                    ProductivityScore = 0, // Will be calculated below
+                    QualityScore = 0, // Will be calculated below
+                    LastActivityDate = e.Commits
+                        .OrderByDescending(c => c.CreatedAt)
+                        .Select(c => c.CreatedAt)
+                        .FirstOrDefault(),
+                    CommitsThisWeek = e.Commits
+                        .Count(c => c.CreatedAt >= DateTime.UtcNow.AddDays(-7)),
+                    PullRequestsThisWeek = e.PullRequests
+                        .Count(pr => pr.CreatedAt >= DateTime.UtcNow.AddDays(-7))
+                })
+                .ToListAsync();
+
+            // Calculate scores
+            foreach (var p in performance)
+            {
+                p.ProductivityScore = CalculateProductivityScore(p);
+                p.QualityScore = CalculateQualityScore(p);
+            }
+
+            return performance.OrderByDescending(p => p.ProductivityScore);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving engineer performance");
+            throw;
+        }
+    }
+
+    public async Task<CodeQualityMetricsDto> GetCodeQualityMetricsAsync(int? repositoryId = null, DateTime? fromDate = null, DateTime? toDate = null)
+    {
+        try
+        {
+            var reviewQuery = _context.Reviews.AsQueryable();
+
+            if (repositoryId.HasValue)
+            {
+                reviewQuery = reviewQuery.Where(r => r.PullRequest.RepositoryId == repositoryId.Value);
+            }
+
+            if (fromDate.HasValue)
+            {
+                reviewQuery = reviewQuery.Where(r => r.CreatedAt >= fromDate.Value);
+            }
+
+            if (toDate.HasValue)
+            {
+                reviewQuery = reviewQuery.Where(r => r.CreatedAt <= toDate.Value);
+            }
+
+            var reviews = await reviewQuery.ToListAsync();
+
+            var metrics = new CodeQualityMetricsDto
+            {
+                TotalReviews = reviews.Count,
+                AverageScore = reviews.Any() ? reviews.Average(r => r.Score) : 0,
+                HighestScore = reviews.Any() ? reviews.Max(r => r.Score) : 0,
+                LowestScore = reviews.Any() ? reviews.Min(r => r.Score) : 0,
+                ScoreDistribution = new Dictionary<string, int>
+                {
+                    ["Excellent (9-10)"] = reviews.Count(r => r.Score >= 9),
+                    ["Good (7-8.9)"] = reviews.Count(r => r.Score >= 7 && r.Score < 9),
+                    ["Average (5-6.9)"] = reviews.Count(r => r.Score >= 5 && r.Score < 7),
+                    ["Poor (3-4.9)"] = reviews.Count(r => r.Score >= 3 && r.Score < 5),
+                    ["Critical (0-2.9)"] = reviews.Count(r => r.Score < 3)
+                },
+                AIReviews = reviews.Count(r => r.ReviewType == "AI"),
+                HumanReviews = reviews.Count(r => r.ReviewType != "AI"),
+                RepositoryId = repositoryId,
+                FromDate = fromDate,
+                ToDate = toDate
+            };
+
+            return metrics;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving code quality metrics");
+            throw;
+        }
+    }
+
+    public async Task<IEnumerable<MonthlyStatsDto>> GetMonthlyStatsAsync(int months = 12)
+    {
+        try
+        {
+            var stats = new List<MonthlyStatsDto>();
+            var currentDate = DateTime.UtcNow;
+
+            for (int i = months - 1; i >= 0; i--)
+            {
+                var monthStart = new DateTime(currentDate.Year, currentDate.Month, 1).AddMonths(-i);
+                var monthEnd = monthStart.AddMonths(1);
+
+                var monthlyStat = new MonthlyStatsDto
+                {
+                    Year = monthStart.Year,
+                    Month = monthStart.Month,
+                    MonthName = monthStart.ToString("MMMM"),
+                    Commits = await _context.Commits
+                        .CountAsync(c => c.CreatedAt >= monthStart && c.CreatedAt < monthEnd),
+                    PullRequests = await _context.PullRequests
+                        .CountAsync(pr => pr.CreatedAt >= monthStart && pr.CreatedAt < monthEnd),
+                    Reviews = await _context.Reviews
+                        .CountAsync(r => r.CreatedAt >= monthStart && r.CreatedAt < monthEnd),
+                    AverageReviewScore = await _context.Reviews
+                        .Where(r => r.CreatedAt >= monthStart && r.CreatedAt < monthEnd)
+                        .AverageAsync(r => (double?)r.Score) ?? 0,
+                    TotalLinesChanged = await _context.Commits
+                        .Where(c => c.CreatedAt >= monthStart && c.CreatedAt < monthEnd)
+                        .SumAsync(c => c.LinesAdded + c.LinesDeleted),
+                    ActiveEngineers = await _context.Engineers
+                        .CountAsync(e => e.IsActive && 
+                            e.Commits.Any(c => c.CreatedAt >= monthStart && c.CreatedAt < monthEnd))
+                };
+
+                stats.Add(monthlyStat);
+            }
+
+            return stats;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving monthly stats for {Months} months", months);
+            throw;
+        }
+    }
+
+    private static double CalculateProductivityScore(EngineerPerformanceDto performance)
+    {
+        // Productivity based on commits, PRs, and lines changed
+        const double commitWeight = 1.0;
+        const double prWeight = 2.0;
+        const double linesWeight = 0.001;
+
+        return (performance.TotalCommits * commitWeight) +
+               (performance.TotalPullRequests * prWeight) +
+               ((performance.TotalLinesAdded + performance.TotalLinesDeleted) * linesWeight);
+    }
+
+    private static double CalculateQualityScore(EngineerPerformanceDto performance)
+    {
+        // Quality based on review scores and review count
+        const double reviewScoreWeight = 2.0;
+        const double reviewCountWeight = 0.1;
+
+        return (performance.AverageReviewScore * reviewScoreWeight) +
+               (performance.TotalReviews * reviewCountWeight);
+    }
+}

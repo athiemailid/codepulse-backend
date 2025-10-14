@@ -1,0 +1,290 @@
+using AutoMapper;
+using CodePulseApi.Data;
+using CodePulseApi.DTOs;
+using CodePulseApi.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace CodePulseApi.Services;
+
+public class LeaderboardService : ILeaderboardService
+{
+    private readonly CodePulseDbContext _context;
+    private readonly IMapper _mapper;
+    private readonly ILogger<LeaderboardService> _logger;
+
+    public LeaderboardService(CodePulseDbContext context, IMapper mapper, ILogger<LeaderboardService> logger)
+    {
+        _context = context;
+        _mapper = mapper;
+        _logger = logger;
+    }
+
+    public async Task<IEnumerable<LeaderboardEntryDto>> GetLeaderboardAsync(int? repositoryId = null, int topCount = 10)
+    {
+        try
+        {
+            var query = _context.Engineers
+                .Where(e => e.IsActive)
+                .AsQueryable();
+
+            if (repositoryId.HasValue)
+            {
+                query = query.Where(e => e.RepositoryId == repositoryId.Value);
+            }
+
+            var leaderboard = await query
+                .Select(e => new LeaderboardEntryDto
+                {
+                    EngineerId = e.Id,
+                    EngineerName = e.Name,
+                    EngineerEmail = e.Email,
+                    RepositoryId = e.RepositoryId,
+                    RepositoryName = e.Repository.Name,
+                    TotalCommits = e.Commits.Count,
+                    TotalPullRequests = e.PullRequests.Count,
+                    AverageReviewScore = e.PullRequests
+                        .Where(pr => pr.Reviews.Any())
+                        .SelectMany(pr => pr.Reviews)
+                        .Average(r => (double?)r.Score) ?? 0,
+                    TotalLinesAdded = e.Commits.Sum(c => c.LinesAdded),
+                    TotalLinesDeleted = e.Commits.Sum(c => c.LinesDeleted),
+                    TotalFilesChanged = e.Commits.Sum(c => c.FilesChanged),
+                    LastActivityDate = e.Commits
+                        .OrderByDescending(c => c.CreatedAt)
+                        .Select(c => c.CreatedAt)
+                        .FirstOrDefault()
+                })
+                .OrderByDescending(e => CalculateScore(e))
+                .Take(topCount)
+                .ToListAsync();
+
+            // Calculate ranks and scores
+            for (int i = 0; i < leaderboard.Count; i++)
+            {
+                leaderboard[i].Rank = i + 1;
+                leaderboard[i].Score = CalculateScore(leaderboard[i]);
+            }
+
+            return leaderboard;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving leaderboard");
+            throw;
+        }
+    }
+
+    public async Task<EngineerStatsDto?> GetEngineerStatsAsync(int engineerId)
+    {
+        try
+        {
+            var engineer = await _context.Engineers
+                .Include(e => e.Repository)
+                .Include(e => e.Commits)
+                .Include(e => e.PullRequests)
+                .ThenInclude(pr => pr.Reviews)
+                .FirstOrDefaultAsync(e => e.Id == engineerId);
+
+            if (engineer == null)
+            {
+                return null;
+            }
+
+            var stats = new EngineerStatsDto
+            {
+                EngineerId = engineer.Id,
+                EngineerName = engineer.Name,
+                EngineerEmail = engineer.Email,
+                RepositoryName = engineer.Repository.Name,
+                TotalCommits = engineer.Commits.Count,
+                TotalPullRequests = engineer.PullRequests.Count,
+                TotalLinesAdded = engineer.Commits.Sum(c => c.LinesAdded),
+                TotalLinesDeleted = engineer.Commits.Sum(c => c.LinesDeleted),
+                TotalFilesChanged = engineer.Commits.Sum(c => c.FilesChanged),
+                AverageReviewScore = engineer.PullRequests
+                    .Where(pr => pr.Reviews.Any())
+                    .SelectMany(pr => pr.Reviews)
+                    .Average(r => (double?)r.Score) ?? 0,
+                LastActivityDate = engineer.Commits
+                    .OrderByDescending(c => c.CreatedAt)
+                    .Select(c => c.CreatedAt)
+                    .FirstOrDefault(),
+                CommitsThisWeek = engineer.Commits
+                    .Count(c => c.CreatedAt >= DateTime.UtcNow.AddDays(-7)),
+                CommitsThisMonth = engineer.Commits
+                    .Count(c => c.CreatedAt >= DateTime.UtcNow.AddDays(-30)),
+                PullRequestsThisWeek = engineer.PullRequests
+                    .Count(pr => pr.CreatedAt >= DateTime.UtcNow.AddDays(-7)),
+                PullRequestsThisMonth = engineer.PullRequests
+                    .Count(pr => pr.CreatedAt >= DateTime.UtcNow.AddDays(-30))
+            };
+
+            stats.Score = CalculateEngineerScore(stats);
+
+            return stats;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving engineer stats for ID {EngineerId}", engineerId);
+            throw;
+        }
+    }
+
+    public async Task<IEnumerable<TopPerformerDto>> GetTopPerformersAsync(int topCount = 5)
+    {
+        try
+        {
+            var performers = await _context.Engineers
+                .Where(e => e.IsActive)
+                .Include(e => e.Repository)
+                .Include(e => e.Commits)
+                .Include(e => e.PullRequests)
+                .ThenInclude(pr => pr.Reviews)
+                .ToListAsync();
+
+            var topPerformers = performers
+                .Select(e => new TopPerformerDto
+                {
+                    EngineerId = e.Id,
+                    EngineerName = e.Name,
+                    RepositoryName = e.Repository.Name,
+                    TotalCommits = e.Commits.Count,
+                    AverageReviewScore = e.PullRequests
+                        .Where(pr => pr.Reviews.Any())
+                        .SelectMany(pr => pr.Reviews)
+                        .Average(r => (double?)r.Score) ?? 0,
+                    TotalContributions = e.Commits.Sum(c => c.LinesAdded + c.LinesDeleted),
+                    Score = 0 // Will be calculated below
+                })
+                .ToList();
+
+            // Calculate scores and rank
+            foreach (var performer in topPerformers)
+            {
+                performer.Score = CalculateTopPerformerScore(performer);
+            }
+
+            return topPerformers
+                .OrderByDescending(p => p.Score)
+                .Take(topCount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving top performers");
+            throw;
+        }
+    }
+
+    public async Task UpdateLeaderboardStatsAsync()
+    {
+        try
+        {
+            // Clear existing stats
+            var existingStats = await _context.LeaderboardStats.ToListAsync();
+            _context.LeaderboardStats.RemoveRange(existingStats);
+
+            // Calculate new stats for all engineers
+            var engineers = await _context.Engineers
+                .Where(e => e.IsActive)
+                .Include(e => e.Commits)
+                .Include(e => e.PullRequests)
+                .ThenInclude(pr => pr.Reviews)
+                .ToListAsync();
+
+            var newStats = engineers.Select(e => new LeaderboardStats
+            {
+                EngineerId = e.Id,
+                TotalCommits = e.Commits.Count,
+                TotalPullRequests = e.PullRequests.Count,
+                TotalLinesAdded = e.Commits.Sum(c => c.LinesAdded),
+                TotalLinesDeleted = e.Commits.Sum(c => c.LinesDeleted),
+                AverageReviewScore = e.PullRequests
+                    .Where(pr => pr.Reviews.Any())
+                    .SelectMany(pr => pr.Reviews)
+                    .Average(r => (double?)r.Score) ?? 0,
+                LastUpdated = DateTime.UtcNow,
+                Score = 0 // Will be calculated below
+            }).ToList();
+
+            // Calculate scores
+            foreach (var stat in newStats)
+            {
+                stat.Score = CalculateLeaderboardScore(stat);
+            }
+
+            // Assign ranks
+            var rankedStats = newStats.OrderByDescending(s => s.Score).ToList();
+            for (int i = 0; i < rankedStats.Count; i++)
+            {
+                rankedStats[i].Rank = i + 1;
+            }
+
+            _context.LeaderboardStats.AddRange(rankedStats);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Updated leaderboard stats for {Count} engineers", rankedStats.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating leaderboard stats");
+            throw;
+        }
+    }
+
+    private static double CalculateScore(LeaderboardEntryDto entry)
+    {
+        // Weighted scoring algorithm
+        const double commitWeight = 1.0;
+        const double prWeight = 2.0;
+        const double reviewWeight = 3.0;
+        const double linesWeight = 0.01;
+        const double activityWeight = 0.5;
+
+        var activityScore = entry.LastActivityDate.HasValue 
+            ? Math.Max(0, 30 - (DateTime.UtcNow - entry.LastActivityDate.Value).TotalDays) / 30.0
+            : 0;
+
+        return (entry.TotalCommits * commitWeight) +
+               (entry.TotalPullRequests * prWeight) +
+               (entry.AverageReviewScore * reviewWeight) +
+               ((entry.TotalLinesAdded + entry.TotalLinesDeleted) * linesWeight) +
+               (activityScore * activityWeight * 10);
+    }
+
+    private static double CalculateEngineerScore(EngineerStatsDto stats)
+    {
+        return CalculateScore(new LeaderboardEntryDto
+        {
+            TotalCommits = stats.TotalCommits,
+            TotalPullRequests = stats.TotalPullRequests,
+            AverageReviewScore = stats.AverageReviewScore,
+            TotalLinesAdded = stats.TotalLinesAdded,
+            TotalLinesDeleted = stats.TotalLinesDeleted,
+            LastActivityDate = stats.LastActivityDate
+        });
+    }
+
+    private static double CalculateTopPerformerScore(TopPerformerDto performer)
+    {
+        const double commitWeight = 1.0;
+        const double reviewWeight = 5.0;
+        const double contributionWeight = 0.001;
+
+        return (performer.TotalCommits * commitWeight) +
+               (performer.AverageReviewScore * reviewWeight) +
+               (performer.TotalContributions * contributionWeight);
+    }
+
+    private static double CalculateLeaderboardScore(LeaderboardStats stats)
+    {
+        const double commitWeight = 1.0;
+        const double prWeight = 2.0;
+        const double reviewWeight = 3.0;
+        const double linesWeight = 0.01;
+
+        return (stats.TotalCommits * commitWeight) +
+               (stats.TotalPullRequests * prWeight) +
+               (stats.AverageReviewScore * reviewWeight) +
+               ((stats.TotalLinesAdded + stats.TotalLinesDeleted) * linesWeight);
+    }
+}

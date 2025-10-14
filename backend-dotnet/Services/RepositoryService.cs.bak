@@ -1,0 +1,245 @@
+using AutoMapper;
+using CodePulseApi.Data;
+using CodePulseApi.DTOs;
+using CodePulseApi.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace CodePulseApi.Services;
+
+public class RepositoryService : IRepositoryService
+{
+    private readonly CodePulseDbContext _context;
+    private readonly IMapper _mapper;
+    private readonly ILogger<RepositoryService> _logger;
+
+    public RepositoryService(CodePulseDbContext context, IMapper mapper, ILogger<RepositoryService> logger)
+    {
+        _context = context;
+        _mapper = mapper;
+        _logger = logger;
+    }
+
+    public async Task<IEnumerable<RepositoryDto>> GetAllRepositoriesAsync()
+    {
+        try
+        {
+            var repositories = await _context.Repositories
+                .Include(r => r.Engineers)
+                .Include(r => r.PullRequests)
+                .Include(r => r.Commits)
+                .ToListAsync();
+
+            return _mapper.Map<IEnumerable<RepositoryDto>>(repositories);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving repositories");
+            throw;
+        }
+    }
+
+    public async Task<RepositoryDto?> GetRepositoryByIdAsync(int id)
+    {
+        try
+        {
+            var repository = await _context.Repositories
+                .Include(r => r.Engineers)
+                .Include(r => r.PullRequests)
+                .Include(r => r.Commits)
+                .FirstOrDefaultAsync(r => r.Id == id);
+
+            return repository != null ? _mapper.Map<RepositoryDto>(repository) : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving repository with ID {RepositoryId}", id);
+            throw;
+        }
+    }
+
+    public async Task<RepositoryDto?> GetRepositoryByNameAsync(string name)
+    {
+        try
+        {
+            var repository = await _context.Repositories
+                .Include(r => r.Engineers)
+                .Include(r => r.PullRequests)
+                .Include(r => r.Commits)
+                .FirstOrDefaultAsync(r => r.Name == name);
+
+            return repository != null ? _mapper.Map<RepositoryDto>(repository) : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving repository with name {RepositoryName}", name);
+            throw;
+        }
+    }
+
+    public async Task<RepositoryDto> CreateRepositoryAsync(CreateRepositoryDto createDto)
+    {
+        try
+        {
+            // Check if repository already exists
+            var existingRepo = await _context.Repositories
+                .FirstOrDefaultAsync(r => r.Name == createDto.Name || r.Url == createDto.Url);
+
+            if (existingRepo != null)
+            {
+                throw new InvalidOperationException($"Repository with name '{createDto.Name}' or URL '{createDto.Url}' already exists");
+            }
+
+            var repository = _mapper.Map<Repository>(createDto);
+            repository.CreatedAt = DateTime.UtcNow;
+            repository.IsActive = true;
+
+            _context.Repositories.Add(repository);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Created repository {RepositoryName} with ID {RepositoryId}", repository.Name, repository.Id);
+
+            return _mapper.Map<RepositoryDto>(repository);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating repository {RepositoryName}", createDto.Name);
+            throw;
+        }
+    }
+
+    public async Task<RepositoryDto> UpdateRepositoryAsync(int id, UpdateRepositoryDto updateDto)
+    {
+        try
+        {
+            var repository = await _context.Repositories.FindAsync(id);
+            if (repository == null)
+            {
+                throw new ArgumentException($"Repository with ID {id} not found");
+            }
+
+            // Update properties
+            if (!string.IsNullOrEmpty(updateDto.Name))
+                repository.Name = updateDto.Name;
+            
+            if (!string.IsNullOrEmpty(updateDto.Description))
+                repository.Description = updateDto.Description;
+            
+            if (!string.IsNullOrEmpty(updateDto.Url))
+                repository.Url = updateDto.Url;
+            
+            if (updateDto.IsActive.HasValue)
+                repository.IsActive = updateDto.IsActive.Value;
+
+            repository.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Updated repository {RepositoryId}", id);
+
+            return _mapper.Map<RepositoryDto>(repository);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating repository {RepositoryId}", id);
+            throw;
+        }
+    }
+
+    public async Task<bool> DeleteRepositoryAsync(int id)
+    {
+        try
+        {
+            var repository = await _context.Repositories.FindAsync(id);
+            if (repository == null)
+            {
+                return false;
+            }
+
+            // Soft delete - just mark as inactive
+            repository.IsActive = false;
+            repository.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Deleted repository {RepositoryId}", id);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting repository {RepositoryId}", id);
+            throw;
+        }
+    }
+
+    public async Task<IEnumerable<RepositoryStatsDto>> GetRepositoryStatsAsync()
+    {
+        try
+        {
+            var stats = await _context.Repositories
+                .Where(r => r.IsActive)
+                .Select(r => new RepositoryStatsDto
+                {
+                    RepositoryId = r.Id,
+                    RepositoryName = r.Name,
+                    TotalPullRequests = r.PullRequests.Count,
+                    TotalCommits = r.Commits.Count,
+                    ActiveEngineers = r.Engineers.Count(e => e.IsActive),
+                    AverageReviewScore = r.PullRequests
+                        .Where(pr => pr.Reviews.Any())
+                        .SelectMany(pr => pr.Reviews)
+                        .Average(rev => (double?)rev.Score) ?? 0,
+                    LastActivityDate = r.PullRequests
+                        .OrderByDescending(pr => pr.CreatedAt)
+                        .Select(pr => pr.CreatedAt)
+                        .FirstOrDefault()
+                })
+                .ToListAsync();
+
+            return stats;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving repository stats");
+            throw;
+        }
+    }
+
+    public async Task<RepositoryDto> GetOrCreateRepositoryAsync(string name, string url, string? description = null)
+    {
+        try
+        {
+            // Try to find existing repository
+            var existing = await _context.Repositories
+                .FirstOrDefaultAsync(r => r.Name == name || r.Url == url);
+
+            if (existing != null)
+            {
+                _logger.LogInformation("Found existing repository {RepositoryName}", name);
+                return _mapper.Map<RepositoryDto>(existing);
+            }
+
+            // Create new repository
+            var repository = new Repository
+            {
+                Name = name,
+                Url = url,
+                Description = description,
+                CreatedAt = DateTime.UtcNow,
+                IsActive = true
+            };
+
+            _context.Repositories.Add(repository);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Created new repository {RepositoryName} with ID {RepositoryId}", name, repository.Id);
+
+            return _mapper.Map<RepositoryDto>(repository);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting or creating repository {RepositoryName}", name);
+            throw;
+        }
+    }
+}

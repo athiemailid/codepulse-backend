@@ -1,0 +1,338 @@
+using AutoMapper;
+using CodePulseApi.Data;
+using CodePulseApi.DTOs;
+using CodePulseApi.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace CodePulseApi.Services;
+
+public class ReviewService : IReviewService
+{
+    private readonly CodePulseDbContext _context;
+    private readonly IMapper _mapper;
+    private readonly IAzureOpenAIService _aiService;
+    private readonly ILogger<ReviewService> _logger;
+
+    public ReviewService(
+        CodePulseDbContext context,
+        IMapper mapper,
+        IAzureOpenAIService aiService,
+        ILogger<ReviewService> logger)
+    {
+        _context = context;
+        _mapper = mapper;
+        _aiService = aiService;
+        _logger = logger;
+    }
+
+    public async Task<IEnumerable<ReviewDto>> GetReviewsAsync(int? pullRequestId = null, int? repositoryId = null)
+    {
+        try
+        {
+            var query = _context.Reviews
+                .Include(r => r.PullRequest)
+                .ThenInclude(pr => pr.Repository)
+                .Include(r => r.PullRequest.Engineer)
+                .AsQueryable();
+
+            if (pullRequestId.HasValue)
+            {
+                query = query.Where(r => r.PullRequestId == pullRequestId.Value);
+            }
+
+            if (repositoryId.HasValue)
+            {
+                query = query.Where(r => r.PullRequest.RepositoryId == repositoryId.Value);
+            }
+
+            var reviews = await query
+                .OrderByDescending(r => r.CreatedAt)
+                .ToListAsync();
+
+            return _mapper.Map<IEnumerable<ReviewDto>>(reviews);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving reviews");
+            throw;
+        }
+    }
+
+    public async Task<ReviewDto?> GetReviewByIdAsync(int id)
+    {
+        try
+        {
+            var review = await _context.Reviews
+                .Include(r => r.PullRequest)
+                .ThenInclude(pr => pr.Repository)
+                .Include(r => r.PullRequest.Engineer)
+                .FirstOrDefaultAsync(r => r.Id == id);
+
+            return review != null ? _mapper.Map<ReviewDto>(review) : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving review with ID {ReviewId}", id);
+            throw;
+        }
+    }
+
+    public async Task<ReviewDto> CreateReviewAsync(CreateReviewDto createDto)
+    {
+        try
+        {
+            // Validate pull request exists
+            var pullRequest = await _context.PullRequests
+                .Include(pr => pr.Repository)
+                .Include(pr => pr.Engineer)
+                .FirstOrDefaultAsync(pr => pr.Id == createDto.PullRequestId);
+
+            if (pullRequest == null)
+            {
+                throw new ArgumentException($"Pull request with ID {createDto.PullRequestId} not found");
+            }
+
+            var review = _mapper.Map<Review>(createDto);
+            review.CreatedAt = DateTime.UtcNow;
+
+            _context.Reviews.Add(review);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Created review for pull request {PullRequestId}", createDto.PullRequestId);
+
+            // Return the review with includes
+            var createdReview = await _context.Reviews
+                .Include(r => r.PullRequest)
+                .ThenInclude(pr => pr.Repository)
+                .Include(r => r.PullRequest.Engineer)
+                .FirstAsync(r => r.Id == review.Id);
+
+            return _mapper.Map<ReviewDto>(createdReview);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating review for pull request {PullRequestId}", createDto.PullRequestId);
+            throw;
+        }
+    }
+
+    public async Task<ReviewDto> CreateAIReviewAsync(int pullRequestId, string code, string fileName)
+    {
+        try
+        {
+            // Validate pull request exists
+            var pullRequest = await _context.PullRequests
+                .Include(pr => pr.Repository)
+                .Include(pr => pr.Engineer)
+                .FirstOrDefaultAsync(pr => pr.Id == pullRequestId);
+
+            if (pullRequest == null)
+            {
+                throw new ArgumentException($"Pull request with ID {pullRequestId} not found");
+            }
+
+            _logger.LogInformation("Generating AI review for pull request {PullRequestId}", pullRequestId);
+
+            // Get AI review
+            var aiResult = await _aiService.ReviewCodeAsync(code, fileName, pullRequest.Description);
+
+            // Create review record
+            var review = new Review
+            {
+                PullRequestId = pullRequestId,
+                ReviewerName = "AI Assistant",
+                ReviewerEmail = "ai@codepulse.com",
+                ReviewType = "AI",
+                Score = aiResult.Score,
+                Feedback = aiResult.Feedback,
+                Suggestions = string.Join("; ", aiResult.Suggestions),
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.Reviews.Add(review);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Created AI review for pull request {PullRequestId} with score {Score}", 
+                pullRequestId, aiResult.Score);
+
+            // Return the review with includes
+            var createdReview = await _context.Reviews
+                .Include(r => r.PullRequest)
+                .ThenInclude(pr => pr.Repository)
+                .Include(r => r.PullRequest.Engineer)
+                .FirstAsync(r => r.Id == review.Id);
+
+            return _mapper.Map<ReviewDto>(createdReview);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating AI review for pull request {PullRequestId}", pullRequestId);
+            throw;
+        }
+    }
+
+    public async Task<ReviewDto> UpdateReviewAsync(int id, UpdateReviewDto updateDto)
+    {
+        try
+        {
+            var review = await _context.Reviews.FindAsync(id);
+            if (review == null)
+            {
+                throw new ArgumentException($"Review with ID {id} not found");
+            }
+
+            // Update properties
+            if (updateDto.Score.HasValue)
+                review.Score = updateDto.Score.Value;
+
+            if (!string.IsNullOrEmpty(updateDto.Feedback))
+                review.Feedback = updateDto.Feedback;
+
+            if (!string.IsNullOrEmpty(updateDto.Suggestions))
+                review.Suggestions = updateDto.Suggestions;
+
+            review.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Updated review {ReviewId}", id);
+
+            // Return the updated review with includes
+            var updatedReview = await _context.Reviews
+                .Include(r => r.PullRequest)
+                .ThenInclude(pr => pr.Repository)
+                .Include(r => r.PullRequest.Engineer)
+                .FirstAsync(r => r.Id == id);
+
+            return _mapper.Map<ReviewDto>(updatedReview);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating review {ReviewId}", id);
+            throw;
+        }
+    }
+
+    public async Task<bool> DeleteReviewAsync(int id)
+    {
+        try
+        {
+            var review = await _context.Reviews.FindAsync(id);
+            if (review == null)
+            {
+                return false;
+            }
+
+            _context.Reviews.Remove(review);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Deleted review {ReviewId}", id);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting review {ReviewId}", id);
+            throw;
+        }
+    }
+
+    public async Task<IEnumerable<ReviewSummaryDto>> GetReviewSummariesAsync(int? repositoryId = null, DateTime? fromDate = null, DateTime? toDate = null)
+    {
+        try
+        {
+            var query = _context.Reviews
+                .Include(r => r.PullRequest)
+                .ThenInclude(pr => pr.Repository)
+                .Include(r => r.PullRequest.Engineer)
+                .AsQueryable();
+
+            if (repositoryId.HasValue)
+            {
+                query = query.Where(r => r.PullRequest.RepositoryId == repositoryId.Value);
+            }
+
+            if (fromDate.HasValue)
+            {
+                query = query.Where(r => r.CreatedAt >= fromDate.Value);
+            }
+
+            if (toDate.HasValue)
+            {
+                query = query.Where(r => r.CreatedAt <= toDate.Value);
+            }
+
+            var summaries = await query
+                .GroupBy(r => new { r.PullRequest.RepositoryId, r.PullRequest.Repository.Name })
+                .Select(g => new ReviewSummaryDto
+                {
+                    RepositoryId = g.Key.RepositoryId,
+                    RepositoryName = g.Key.Name,
+                    TotalReviews = g.Count(),
+                    AverageScore = g.Average(r => r.Score),
+                    HighestScore = g.Max(r => r.Score),
+                    LowestScore = g.Min(r => r.Score),
+                    AIReviews = g.Count(r => r.ReviewType == "AI"),
+                    HumanReviews = g.Count(r => r.ReviewType != "AI"),
+                    LastReviewDate = g.Max(r => r.CreatedAt)
+                })
+                .OrderByDescending(s => s.AverageScore)
+                .ToListAsync();
+
+            return summaries;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving review summaries");
+            throw;
+        }
+    }
+
+    public async Task<double> GetAverageScoreForEngineerAsync(int engineerId, DateTime? fromDate = null, DateTime? toDate = null)
+    {
+        try
+        {
+            var query = _context.Reviews
+                .Where(r => r.PullRequest.EngineerId == engineerId);
+
+            if (fromDate.HasValue)
+            {
+                query = query.Where(r => r.CreatedAt >= fromDate.Value);
+            }
+
+            if (toDate.HasValue)
+            {
+                query = query.Where(r => r.CreatedAt <= toDate.Value);
+            }
+
+            var average = await query.AverageAsync(r => (double?)r.Score);
+            return average ?? 0.0;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error calculating average score for engineer {EngineerId}", engineerId);
+            throw;
+        }
+    }
+
+    public async Task<IEnumerable<ReviewDto>> GetRecentReviewsAsync(int count = 10)
+    {
+        try
+        {
+            var reviews = await _context.Reviews
+                .Include(r => r.PullRequest)
+                .ThenInclude(pr => pr.Repository)
+                .Include(r => r.PullRequest.Engineer)
+                .OrderByDescending(r => r.CreatedAt)
+                .Take(count)
+                .ToListAsync();
+
+            return _mapper.Map<IEnumerable<ReviewDto>>(reviews);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving recent reviews");
+            throw;
+        }
+    }
+}
