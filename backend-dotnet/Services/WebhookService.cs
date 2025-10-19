@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text;
 using System.Security.Cryptography;
+using CodePulseApi.DTOs;
 
 namespace CodePulseApi.Services;
 
@@ -13,7 +14,7 @@ public class WebhookService : IWebhookService
     private readonly CodePulseDbContext _context;
     private readonly IAzureAIFoundryService _aiService;
     private readonly ILogger<WebhookService> _logger;
-    private const string GitHubSecret = "3q2+7w==kL9x8Yz1JH5vT2aB4cD9eF=="; 
+    private const string GitHubSecret = "3q2+7w==kL9x8Yz1JH5vT2aB4cD9eF==";
 
     public WebhookService(
         CodePulseDbContext context,
@@ -105,30 +106,37 @@ public class WebhookService : IWebhookService
     {
         _logger.LogInformation("Processing GitHub webhook: {WebhookPayload}", JsonSerializer.Serialize(webhook));
 
-        switch (webhook.EventType)
+        // Use the Action property to determine the event type
+        if (!string.IsNullOrEmpty(webhook.Action))
         {
-            case "push":
-                return await HandleGitHubPushEventAsync(webhook);
-            case "pull_request":
-                return await HandleGitHubPullRequestEventAsync(webhook);
-            default:
-                _logger.LogInformation("Unhandled GitHub event type: {EventType}", webhook.EventType);
-                return true;
+            switch (webhook.Action)
+            {
+                case "push":
+                    return await HandleGitHubPushEventAsync(webhook);
+                case "pull_request":
+                    return await HandleGitHubPullRequestEventAsync(webhook);
+                default:
+                    _logger.LogInformation("Unhandled GitHub event type: {EventType}", webhook.Action);
+                    return true;
+            }
         }
+
+        _logger.LogWarning("Invalid or missing Action in GitHub webhook");
+        return false;
     }
 
-    private async Task<bool> HandleAzurePullRequestEventAsync(AzureDevOpsWebhookDto webhook)
+    private Task<bool> HandleAzurePullRequestEventAsync(AzureDevOpsWebhookDto webhook)
     {
         _logger.LogInformation("Handling Azure DevOps pull request event");
         // Add logic for handling Azure pull request events
-        return true;
+        return Task.FromResult(true);
     }
 
-    private async Task<bool> HandleAzureGitPushEventAsync(AzureDevOpsWebhookDto webhook)
+    private Task<bool> HandleAzureGitPushEventAsync(AzureDevOpsWebhookDto webhook)
     {
         _logger.LogInformation("Handling Azure DevOps git push event");
         // Add logic for handling Azure git push events
-        return true;
+        return Task.FromResult(true);
     }
 
     private async Task<bool> HandleGitHubPushEventAsync(GitHubWebhookDto webhook)
@@ -141,8 +149,8 @@ public class WebhookService : IWebhookService
             var repository = payload.GetProperty("repository");
             var commits = payload.GetProperty("commits");
 
-            var repoName = repository.GetProperty("name").GetString();
-            var repoUrl = repository.GetProperty("html_url").GetString();
+            var repoName = repository.GetProperty("name").GetString() ?? string.Empty;
+            var repoUrl = repository.GetProperty("html_url").GetString() ?? string.Empty;
 
             if (string.IsNullOrEmpty(repoName) || string.IsNullOrEmpty(repoUrl))
             {
@@ -154,11 +162,11 @@ public class WebhookService : IWebhookService
 
             foreach (var commit in commits.EnumerateArray())
             {
-                var commitId = commit.GetProperty("id").GetString();
-                var message = commit.GetProperty("message").GetString();
+                var commitId = commit.GetProperty("id").GetString() ?? string.Empty;
+                var message = commit.GetProperty("message").GetString() ?? string.Empty;
                 var author = commit.GetProperty("author");
-                var authorName = author.GetProperty("name").GetString();
-                var authorEmail = author.GetProperty("email").GetString();
+                var authorName = author.GetProperty("name").GetString() ?? string.Empty;
+                var authorEmail = author.GetProperty("email").GetString() ?? string.Empty;
 
                 var existingCommit = await _context.Commits
                     .FirstOrDefaultAsync(c => c.CommitId == commitId && c.RepositoryId == repoEntity.Id);
@@ -177,7 +185,7 @@ public class WebhookService : IWebhookService
                     Author = authorName,
                     AuthorEmail = authorEmail,
                     CommitDate = DateTime.UtcNow,
-                    Url = commit.GetProperty("url").GetString(),
+                    Url = commit.GetProperty("url").GetString() ?? string.Empty,
                     RepositoryId = repoEntity.Id,
                     AuthorId = engineer.Id
                 };
@@ -204,8 +212,8 @@ public class WebhookService : IWebhookService
             var pullRequest = payload.GetProperty("pull_request");
             var repository = payload.GetProperty("repository");
 
-            var repoName = repository.GetProperty("name").GetString();
-            var repoUrl = repository.GetProperty("html_url").GetString();
+            var repoName = repository.GetProperty("name").GetString() ?? string.Empty;
+            var repoUrl = repository.GetProperty("html_url").GetString() ?? string.Empty;
 
             if (string.IsNullOrEmpty(repoName) || string.IsNullOrEmpty(repoUrl))
             {
@@ -216,10 +224,10 @@ public class WebhookService : IWebhookService
             var repoEntity = await GetOrCreateRepositoryAsync(repoName, repoUrl);
 
             var prId = pullRequest.GetProperty("id").GetInt32();
-            var title = pullRequest.GetProperty("title").GetString();
-            var description = pullRequest.GetProperty("body").GetString();
-            var status = pullRequest.GetProperty("state").GetString();
-            var prUrl = pullRequest.GetProperty("html_url").GetString();
+            var title = pullRequest.GetProperty("title").GetString() ?? string.Empty;
+            var description = pullRequest.GetProperty("body").GetString() ?? string.Empty;
+            var status = pullRequest.GetProperty("state").GetString() ?? string.Empty;
+            var prUrl = pullRequest.GetProperty("html_url").GetString() ?? string.Empty;
 
             var existingPR = await _context.PullRequests
                 .FirstOrDefaultAsync(pr => pr.PrId == prId && pr.RepositoryId == repoEntity.Id);
