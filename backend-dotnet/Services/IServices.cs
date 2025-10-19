@@ -10,8 +10,10 @@ public interface IAzureAIFoundryService
 
 public interface IWebhookService
 {
+    Task<bool> ProcessWebhookAsync(object webhook, string provider, string? signature = null);
     Task<bool> ProcessWebhookAsync(AzureDevOpsWebhookDto webhook);
 }
+
 
 public interface IRepositoryService
 {
