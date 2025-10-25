@@ -42,7 +42,7 @@ public class WebhookService : IWebhookService
                     return false;
                 }
 
-                return await ProcessGitHubWebhookAsync(githubWebhook);
+                return await ProcessWebhookAsync(githubWebhook);
             }
             else
             {
@@ -77,22 +77,7 @@ public class WebhookService : IWebhookService
         _context.WebhookEvents.Add(webhookEvent);
         await _context.SaveChangesAsync();
 
-        bool processed = false;
-
-        switch (webhook.EventType)
-        {
-            case "git.pullrequest.created":
-            case "git.pullrequest.updated":
-                processed = await HandleAzurePullRequestEventAsync(webhook);
-                break;
-            case "git.push":
-                processed = await HandleAzureGitPushEventAsync(webhook);
-                break;
-            default:
-                _logger.LogInformation("Unhandled Azure DevOps event type: {EventType}", webhook.EventType);
-                processed = true; // Mark as processed even if we don't handle it
-                break;
-        }
+        bool processed = false;  
 
         // Update webhook event status
         webhookEvent.Processed = processed;
@@ -101,28 +86,29 @@ public class WebhookService : IWebhookService
 
         return processed;
     }
-
-    private async Task<bool> ProcessGitHubWebhookAsync(GitHubWebhookDto webhook)
+    public async Task<bool> ProcessWebhookAsync(GitHubWebhookDto webhook)
     {
-        _logger.LogInformation("Processing GitHub webhook: {WebhookPayload}", JsonSerializer.Serialize(webhook));
-
-        // Use the Action property to determine the event type
-        if (!string.IsNullOrEmpty(webhook.Action))
+        if (webhook == null)
         {
-            switch (webhook.Action)
-            {
-                case "push":
-                    return await HandleGitHubPushEventAsync(webhook);
-                case "pull_request":
-                    return await HandleGitHubPullRequestEventAsync(webhook);
-                default:
-                    _logger.LogInformation("Unhandled GitHub event type: {EventType}", webhook.Action);
-                    return true;
-            }
+            _logger.LogError("Webhook payload is null.");
+            return false;
         }
 
-        _logger.LogWarning("Invalid or missing Action in GitHub webhook");
-        return false;
+        if (string.IsNullOrEmpty(webhook.Ref))
+        {
+            _logger.LogWarning("Missing 'ref' field in webhook payload.");
+            return false;
+        }
+
+        if (webhook.Repository == null || webhook.Repository.Id == 0)
+        {
+            _logger.LogWarning("Missing or invalid 'repository' field in webhook payload.");
+            return false;
+        }
+
+        // Process the webhook (example logic)
+        _logger.LogInformation("Processing webhook for repository: {RepoName}", webhook.Repository.FullName);
+        return true;
     }
 
     private Task<bool> HandleAzurePullRequestEventAsync(AzureDevOpsWebhookDto webhook)
@@ -132,146 +118,146 @@ public class WebhookService : IWebhookService
         return Task.FromResult(true);
     }
 
-    private Task<bool> HandleAzureGitPushEventAsync(AzureDevOpsWebhookDto webhook)
-    {
-        _logger.LogInformation("Handling Azure DevOps git push event");
-        // Add logic for handling Azure git push events
-        return Task.FromResult(true);
-    }
+    //private Task<bool> HandleAzureGitPushEventAsync(AzureDevOpsWebhookDto webhook)
+    //{
+    //    _logger.LogInformation("Handling Azure DevOps git push event");
+    //    // Add logic for handling Azure git push events
+    //    return Task.FromResult(true);
+    //}
 
-    private async Task<bool> HandleGitHubPushEventAsync(GitHubWebhookDto webhook)
-    {
-        _logger.LogInformation("Processing GitHub push event");
+    //private async Task<bool> HandleGitHubPushEventAsync(GitHubWebhookDto webhook)
+    //{
+    //    _logger.LogInformation("Processing GitHub push event");
 
-        // Extract repository and commits from the payload
-        if (webhook.Payload is JsonElement payload)
-        {
-            var repository = payload.GetProperty("repository");
-            var commits = payload.GetProperty("commits");
+    //    // Extract repository and commits from the payload
+    //    if (webhook.Payload is JsonElement payload)
+    //    {
+    //        var repository = payload.GetProperty("repository");
+    //        var commits = payload.GetProperty("commits");
 
-            var repoName = repository.GetProperty("name").GetString() ?? string.Empty;
-            var repoUrl = repository.GetProperty("html_url").GetString() ?? string.Empty;
+    //        var repoName = repository.GetProperty("name").GetString() ?? string.Empty;
+    //        var repoUrl = repository.GetProperty("html_url").GetString() ?? string.Empty;
 
-            if (string.IsNullOrEmpty(repoName) || string.IsNullOrEmpty(repoUrl))
-            {
-                _logger.LogWarning("Missing repository information in GitHub webhook");
-                return false;
-            }
+    //        if (string.IsNullOrEmpty(repoName) || string.IsNullOrEmpty(repoUrl))
+    //        {
+    //            _logger.LogWarning("Missing repository information in GitHub webhook");
+    //            return false;
+    //        }
 
-            var repoEntity = await GetOrCreateRepositoryAsync(repoName, repoUrl);
+    //        var repoEntity = await GetOrCreateRepositoryAsync(repoName, repoUrl);
 
-            foreach (var commit in commits.EnumerateArray())
-            {
-                var commitId = commit.GetProperty("id").GetString() ?? string.Empty;
-                var message = commit.GetProperty("message").GetString() ?? string.Empty;
-                var author = commit.GetProperty("author");
-                var authorName = author.GetProperty("name").GetString() ?? string.Empty;
-                var authorEmail = author.GetProperty("email").GetString() ?? string.Empty;
+    //        foreach (var commit in commits.EnumerateArray())
+    //        {
+    //            var commitId = commit.GetProperty("id").GetString() ?? string.Empty;
+    //            var message = commit.GetProperty("message").GetString() ?? string.Empty;
+    //            var author = commit.GetProperty("author");
+    //            var authorName = author.GetProperty("name").GetString() ?? string.Empty;
+    //            var authorEmail = author.GetProperty("email").GetString() ?? string.Empty;
 
-                var existingCommit = await _context.Commits
-                    .FirstOrDefaultAsync(c => c.CommitId == commitId && c.RepositoryId == repoEntity.Id);
+    //            var existingCommit = await _context.Commits
+    //                .FirstOrDefaultAsync(c => c.CommitId == commitId && c.RepositoryId == repoEntity.Id);
 
-                if (existingCommit != null)
-                {
-                    continue; // Skip existing commits
-                }
+    //            if (existingCommit != null)
+    //            {
+    //                continue; // Skip existing commits
+    //            }
 
-                var engineer = await GetOrCreateEngineerAsync(authorName, authorEmail);
+    //            var engineer = await GetOrCreateEngineerAsync(authorName, authorEmail);
 
-                var newCommit = new Commit
-                {
-                    CommitId = commitId,
-                    Message = message,
-                    Author = authorName,
-                    AuthorEmail = authorEmail,
-                    CommitDate = DateTime.UtcNow,
-                    Url = commit.GetProperty("url").GetString() ?? string.Empty,
-                    RepositoryId = repoEntity.Id,
-                    AuthorId = engineer.Id
-                };
+    //            var newCommit = new Commit
+    //            {
+    //                CommitId = commitId,
+    //                Message = message,
+    //                Author = authorName,
+    //                AuthorEmail = authorEmail,
+    //                CommitDate = DateTime.UtcNow,
+    //                Url = commit.GetProperty("url").GetString() ?? string.Empty,
+    //                RepositoryId = repoEntity.Id,
+    //                AuthorId = engineer.Id
+    //            };
 
-                _context.Commits.Add(newCommit);
-                _logger.LogInformation("Created commit {CommitHash} by {AuthorName} in repository {RepositoryName}",
-                    commitId, authorName, repoName);
-            }
+    //            _context.Commits.Add(newCommit);
+    //            _logger.LogInformation("Created commit {CommitHash} by {AuthorName} in repository {RepositoryName}",
+    //                commitId, authorName, repoName);
+    //        }
 
-            await _context.SaveChangesAsync();
-            return true;
-        }
+    //        await _context.SaveChangesAsync();
+    //        return true;
+    //    }
 
-        _logger.LogWarning("Invalid payload format for GitHub push event");
-        return false;
-    }
+    //    _logger.LogWarning("Invalid payload format for GitHub push event");
+    //    return false;
+    //}
 
-    private async Task<bool> HandleGitHubPullRequestEventAsync(GitHubWebhookDto webhook)
-    {
-        _logger.LogInformation("Processing GitHub pull request event");
+    //private async Task<bool> HandleGitHubPullRequestEventAsync(GitHubWebhookDto webhook)
+    //{
+    //    _logger.LogInformation("Processing GitHub pull request event");
 
-        if (webhook.Payload is JsonElement payload)
-        {
-            var pullRequest = payload.GetProperty("pull_request");
-            var repository = payload.GetProperty("repository");
+    //    if (webhook.Payload is JsonElement payload)
+    //    {
+    //        var pullRequest = payload.GetProperty("pull_request");
+    //        var repository = payload.GetProperty("repository");
 
-            var repoName = repository.GetProperty("name").GetString() ?? string.Empty;
-            var repoUrl = repository.GetProperty("html_url").GetString() ?? string.Empty;
+    //        var repoName = repository.GetProperty("name").GetString() ?? string.Empty;
+    //        var repoUrl = repository.GetProperty("html_url").GetString() ?? string.Empty;
 
-            if (string.IsNullOrEmpty(repoName) || string.IsNullOrEmpty(repoUrl))
-            {
-                _logger.LogWarning("Missing repository information in GitHub webhook");
-                return false;
-            }
+    //        if (string.IsNullOrEmpty(repoName) || string.IsNullOrEmpty(repoUrl))
+    //        {
+    //            _logger.LogWarning("Missing repository information in GitHub webhook");
+    //            return false;
+    //        }
 
-            var repoEntity = await GetOrCreateRepositoryAsync(repoName, repoUrl);
+    //        var repoEntity = await GetOrCreateRepositoryAsync(repoName, repoUrl);
 
-            var prId = pullRequest.GetProperty("id").GetInt32();
-            var title = pullRequest.GetProperty("title").GetString() ?? string.Empty;
-            var description = pullRequest.GetProperty("body").GetString() ?? string.Empty;
-            var status = pullRequest.GetProperty("state").GetString() ?? string.Empty;
-            var prUrl = pullRequest.GetProperty("html_url").GetString() ?? string.Empty;
+    //        var prId = pullRequest.GetProperty("id").GetInt32();
+    //        var title = pullRequest.GetProperty("title").GetString() ?? string.Empty;
+    //        var description = pullRequest.GetProperty("body").GetString() ?? string.Empty;
+    //        var status = pullRequest.GetProperty("state").GetString() ?? string.Empty;
+    //        var prUrl = pullRequest.GetProperty("html_url").GetString() ?? string.Empty;
 
-            var existingPR = await _context.PullRequests
-                .FirstOrDefaultAsync(pr => pr.PrId == prId && pr.RepositoryId == repoEntity.Id);
+    //        var existingPR = await _context.PullRequests
+    //            .FirstOrDefaultAsync(pr => pr.PrId == prId && pr.RepositoryId == repoEntity.Id);
 
-            if (existingPR == null)
-            {
-                var newPR = new PullRequest
-                {
-                    PrId = prId,
-                    Title = title,
-                    Description = description,
-                    Status = status,
-                    Url = prUrl,
-                    RepositoryId = repoEntity.Id,
-                    CreatedDate = DateTime.UtcNow
-                };
+    //        if (existingPR == null)
+    //        {
+    //            var newPR = new PullRequest
+    //            {
+    //                PrId = prId,
+    //                Title = title,
+    //                Description = description,
+    //                Status = status,
+    //                Url = prUrl,
+    //                RepositoryId = repoEntity.Id,
+    //                CreatedDate = DateTime.UtcNow
+    //            };
 
-                _context.PullRequests.Add(newPR);
-                _logger.LogInformation("Created pull request {PullRequestId} for repository {RepositoryName}",
-                    prId, repoName);
-            }
-            else
-            {
-                existingPR.Title = title;
-                existingPR.Description = description;
-                existingPR.Status = status;
-                existingPR.Url = prUrl;
+    //            _context.PullRequests.Add(newPR);
+    //            _logger.LogInformation("Created pull request {PullRequestId} for repository {RepositoryName}",
+    //                prId, repoName);
+    //        }
+    //        else
+    //        {
+    //            existingPR.Title = title;
+    //            existingPR.Description = description;
+    //            existingPR.Status = status;
+    //            existingPR.Url = prUrl;
 
-                if (status.Equals("closed", StringComparison.OrdinalIgnoreCase))
-                {
-                    existingPR.ClosedDate = DateTime.UtcNow;
-                }
+    //            if (status.Equals("closed", StringComparison.OrdinalIgnoreCase))
+    //            {
+    //                existingPR.ClosedDate = DateTime.UtcNow;
+    //            }
 
-                _logger.LogInformation("Updated pull request {PullRequestId} for repository {RepositoryName}",
-                    prId, repoName);
-            }
+    //            _logger.LogInformation("Updated pull request {PullRequestId} for repository {RepositoryName}",
+    //                prId, repoName);
+    //        }
 
-            await _context.SaveChangesAsync();
-            return true;
-        }
+    //        await _context.SaveChangesAsync();
+    //        return true;
+    //    }
 
-        _logger.LogWarning("Invalid payload format for GitHub pull request event");
-        return false;
-    }
+    //    _logger.LogWarning("Invalid payload format for GitHub pull request event");
+    //    return false;
+    //}
 
     private bool IsValidGitHubSignature(string? signature, string payload)
     {

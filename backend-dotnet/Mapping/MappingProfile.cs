@@ -9,10 +9,7 @@ public class MappingProfile : Profile
     public MappingProfile()
     {
         // Repository mappings
-        CreateMap<Repository, RepositoryDto>()
-            .ForMember(dest => dest.TotalPullRequests, opt => opt.MapFrom(src => src.PullRequests.Count))
-            .ForMember(dest => dest.TotalCommits, opt => opt.MapFrom(src => src.Commits.Count));
-            
+      
         CreateMap<Repository, RepositoryResponseDto>()
             .ForMember(dest => dest.TotalPullRequests, opt => opt.MapFrom(src => src.PullRequests.Count))
             .ForMember(dest => dest.TotalCommits, opt => opt.MapFrom(src => src.Commits.Count));
@@ -45,11 +42,7 @@ public class MappingProfile : Profile
             .ForMember(dest => dest.SourceBranch, opt => opt.MapFrom(src => src.SourceRefName))
             .ForMember(dest => dest.TargetBranch, opt => opt.MapFrom(src => src.TargetRefName));
 
-        // Commit mappings
-        CreateMap<Commit, CommitDto>()
-            .ForMember(dest => dest.RepositoryName, opt => opt.MapFrom(src => src.Repository != null ? src.Repository.Name : ""))
-            .ForMember(dest => dest.AuthorName, opt => opt.MapFrom(src => src.Author));
-            
+       
         CreateMap<Commit, CommitResponseDto>()
             .ForMember(dest => dest.CreatedAt, opt => opt.MapFrom(src => src.CommitDate))
             .ForMember(dest => dest.CommitHash, opt => opt.MapFrom(src => src.CommitId));

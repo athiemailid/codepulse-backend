@@ -64,15 +64,6 @@ public class GitPushResourceDto
     public string Url { get; set; } = string.Empty;
 }
 
-public class RepositoryDto
-{
-    public string Id { get; set; } = string.Empty;
-    public string Name { get; set; } = string.Empty;
-    public string Url { get; set; } = string.Empty;
-    public ProjectDto Project { get; set; } = new();
-    public int TotalPullRequests { get; set; }
-    public int TotalCommits { get; set; }
-}
 
 public class ProjectDto
 {
@@ -87,23 +78,7 @@ public class UserDto
     public string ImageUrl { get; set; } = string.Empty;
 }
 
-public class CommitDto
-{
-    public string CommitId { get; set; } = string.Empty;
-    public AuthorDto Author { get; set; } = new();
-    public AuthorDto Committer { get; set; } = new();
-    public string Comment { get; set; } = string.Empty;
-    public string Url { get; set; } = string.Empty;
-    public string RepositoryName { get; set; } = string.Empty;
-    public string AuthorName { get; set; } = string.Empty;
-}
 
-public class AuthorDto
-{
-    public string Name { get; set; } = string.Empty;
-    public string Email { get; set; } = string.Empty;
-    public DateTime Date { get; set; }
-}
 
 public class RefUpdateDto
 {
