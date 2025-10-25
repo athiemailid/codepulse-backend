@@ -570,3 +570,114 @@ public class WebhookEventDto
     public DateTime CreatedAt { get; set; }
     public DateTime? ProcessedAt { get; set; }
 }
+
+// SignalR Notification DTOs
+public class NotificationDto
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Type { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public object? Data { get; set; }
+    public NotificationSeverity Severity { get; set; } = NotificationSeverity.Info;
+    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public string? RepositoryId { get; set; }
+    public string? RepositoryName { get; set; }
+    public string? UserId { get; set; }
+    public string? ActionUrl { get; set; }
+    public bool IsRead { get; set; } = false;
+    public Dictionary<string, object> Metadata { get; set; } = new();
+}
+
+public enum NotificationSeverity
+{
+    Info = 0,
+    Success = 1,
+    Warning = 2,
+    Error = 3,
+    Critical = 4
+}
+
+public enum NotificationType
+{
+    WebhookReceived,
+    PushEvent,
+    PullRequestCreated,
+    PullRequestMerged,
+    PullRequestClosed,
+    CommitProcessed,
+    ReviewGenerated,
+    SystemAlert,
+    RepositoryAdded,
+    EngineerJoined,
+    CodeQualityAlert,
+    PerformanceUpdate
+}
+
+public class WebhookNotificationDto : NotificationDto
+{
+    public string WebhookSource { get; set; } = string.Empty;
+    public string EventType { get; set; } = string.Empty;
+    public int CommitCount { get; set; }
+    public string Branch { get; set; } = string.Empty;
+    public string AuthorName { get; set; } = string.Empty;
+    public string AuthorEmail { get; set; } = string.Empty;
+}
+
+public class PullRequestNotificationDto : NotificationDto
+{
+    public int PullRequestId { get; set; }
+    public string PullRequestTitle { get; set; } = string.Empty;
+    public string SourceBranch { get; set; } = string.Empty;
+    public string TargetBranch { get; set; } = string.Empty;
+    public string Author { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+}
+
+public class CommitNotificationDto : NotificationDto
+{
+    public string CommitHash { get; set; } = string.Empty;
+    public string CommitMessage { get; set; } = string.Empty;
+    public string Branch { get; set; } = string.Empty;
+    public string Author { get; set; } = string.Empty;
+    public int FilesChanged { get; set; }
+    public int LinesAdded { get; set; }
+    public int LinesDeleted { get; set; }
+}
+
+public class ReviewNotificationDto : NotificationDto
+{
+    public string ReviewId { get; set; } = string.Empty;
+    public string ReviewType { get; set; } = string.Empty;
+    public double Score { get; set; }
+    public string Reviewer { get; set; } = string.Empty;
+    public string? PullRequestId { get; set; }
+    public string? CommitId { get; set; }
+}
+
+public class SystemNotificationDto : NotificationDto
+{
+    public string SystemComponent { get; set; } = string.Empty;
+    public string ErrorCode { get; set; } = string.Empty;
+    public string? StackTrace { get; set; }
+}
+
+public class NotificationPreferencesDto
+{
+    public string UserId { get; set; } = string.Empty;
+    public bool EnableRealTimeNotifications { get; set; } = true;
+    public bool EnableEmailNotifications { get; set; } = false;
+    public List<string> EnabledNotificationTypes { get; set; } = new();
+    public List<string> SubscribedRepositories { get; set; } = new();
+    public NotificationSeverity MinimumSeverity { get; set; } = NotificationSeverity.Info;
+}
+
+public class NotificationStatsDto
+{
+    public int TotalNotifications { get; set; }
+    public int UnreadNotifications { get; set; }
+    public int TodayNotifications { get; set; }
+    public int WeekNotifications { get; set; }
+    public Dictionary<string, int> NotificationsByType { get; set; } = new();
+    public Dictionary<string, int> NotificationsBySeverity { get; set; } = new();
+}

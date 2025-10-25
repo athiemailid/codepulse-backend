@@ -47,6 +47,22 @@ public interface IAnalyticsService
     Task<TeamComparisonDto> GetTeamComparisonAsync(string period = "30d");
 }
 
+public interface INotificationService
+{
+    Task SendNotificationAsync(NotificationDto notification);
+    Task SendWebhookNotificationAsync(string webhookSource, string eventType, string repositoryId, string repositoryName, object data);
+    Task SendPullRequestNotificationAsync(string repositoryId, string repositoryName, int pullRequestId, string title, string author, string status, string action);
+    Task SendCommitNotificationAsync(string repositoryId, string repositoryName, string commitHash, string message, string author, string branch, int filesChanged);
+    Task SendReviewNotificationAsync(string repositoryId, string repositoryName, string reviewId, string reviewType, double score, string reviewer, string? pullRequestId = null, string? commitId = null);
+    Task SendSystemNotificationAsync(string title, string message, NotificationSeverity severity, string? userId = null, object? data = null);
+    Task SendNotificationToUserAsync(string userId, NotificationDto notification);
+    Task SendNotificationToRepositorySubscribersAsync(string repositoryId, NotificationDto notification);
+    Task SendNotificationToAllUsersAsync(NotificationDto notification);
+    Task<List<NotificationDto>> GetUserNotificationsAsync(string userId, int limit = 50, bool unreadOnly = false);
+    Task MarkNotificationAsReadAsync(string notificationId, string userId);
+    Task<NotificationStatsDto> GetNotificationStatsAsync(string userId);
+}
+
 // Additional DTOs for services
 public class PullRequestSummaryDto
 {

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Serilog;
 using CodePulseApi.Data;
 using CodePulseApi.Services;
+using CodePulseApi.Hubs;
 using AutoMapper;
 using backend_dotnet.Services;
 using backend_dotnet.Models;
@@ -23,6 +24,37 @@ builder.Host.UseSerilog();
 // Add services to the container.
 builder.Services.AddControllers();
 
+// Add SignalR services
+var azureSignalRConnectionString = builder.Configuration.GetConnectionString("AzureSignalRConnectionString");
+if (!string.IsNullOrEmpty(azureSignalRConnectionString))
+{
+    builder.Services.AddSignalR(options =>
+    {
+        options.EnableDetailedErrors = builder.Environment.IsDevelopment();
+        options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+        options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+    })
+    .AddAzureSignalR(azureSignalRConnectionString);
+}
+else
+{
+    builder.Services.AddSignalR(options =>
+    {
+        options.EnableDetailedErrors = builder.Environment.IsDevelopment();
+        options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+        options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+    });
+}
+
+// Configure SignalR authorization
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("SignalRPolicy", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+    });
+});
+
 // Add Entity Framework
 builder.Services.AddDbContext<CodePulseDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
@@ -38,13 +70,14 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(builder.Configuration["Frontend:Url"] ?? "http://localhost:3000")
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials();
+              .AllowCredentials(); // Required for SignalR
     });
 });
 
 // Register services
 builder.Services.AddScoped<IAzureAIFoundryService, AzureAIFoundryService>();
 builder.Services.AddScoped<IWebhookService, WebhookService>();
+builder.Services.AddScoped<INotificationService, NotificationService>();
 // Temporarily commented out until DTOs and models are fixed
 builder.Services.AddScoped<IRepositoryService, RepositoryService>();
 builder.Services.AddScoped<ILeaderboardService, LeaderboardService>();
@@ -103,6 +136,26 @@ builder.Services.AddAuthentication(options =>
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
         ClockSkew = TimeSpan.Zero
     };
+
+    // Configure JWT for SignalR connections
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            // Check if the request is for SignalR hub
+            var path = context.HttpContext.Request.Path;
+            var accessToken = context.Request.Query["access_token"];
+
+            // If the request is for our hub and we have a token
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/notificationHub"))
+            {
+                // Read the token from the query string
+                context.Token = accessToken;
+            }
+
+            return Task.CompletedTask;
+        }
+    };
 });
 
 var app = builder.Build();
@@ -124,6 +177,9 @@ app.UseAuthentication(); // <-- Add this before authorization
 app.UseAuthorization();
 
 app.MapControllers();
+
+// Map SignalR Hub with authentication required
+app.MapHub<NotificationHub>("/notificationHub").RequireAuthorization("SignalRPolicy");
 
 // Health check endpoint
 app.MapGet("/health", () => new

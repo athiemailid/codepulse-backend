@@ -5,7 +5,6 @@ using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text;
 using System.Security.Cryptography;
-using CodePulseApi.DTOs;
 
 namespace CodePulseApi.Services;
 
@@ -13,16 +12,19 @@ public class WebhookService : IWebhookService
 {
     private readonly CodePulseDbContext _context;
     private readonly IAzureAIFoundryService _aiService;
+    private readonly INotificationService _notificationService;
     private readonly ILogger<WebhookService> _logger;
     private const string GitHubSecret = "3q2+7w==kL9x8Yz1JH5vT2aB4cD9eF==";
 
     public WebhookService(
         CodePulseDbContext context,
         IAzureAIFoundryService aiService,
+        INotificationService notificationService,
         ILogger<WebhookService> logger)
     {
         _context = context;
         _aiService = aiService;
+        _notificationService = notificationService;
         _logger = logger;
     }
 
@@ -100,9 +102,144 @@ public class WebhookService : IWebhookService
             return false;
         }
 
-        // Process the webhook (example logic)
-        _logger.LogInformation("Processing webhook for repository: {RepoName}", webhook.Repository.FullName);
-        return true;
+        try
+        {
+            // Process the webhook (example logic)
+            _logger.LogInformation("Processing webhook for repository: {RepoName}", webhook.Repository.FullName);
+
+            var repositoryId = webhook.Repository.Id.ToString();
+            var repositoryName = webhook.Repository.FullName ?? "Unknown Repository";
+
+            // Handle different webhook events
+            if (!string.IsNullOrEmpty(webhook.Action))
+            {
+                switch (webhook.Action.ToLower())
+                {
+                    case "push":
+                        await HandlePushEventAsync(webhook, repositoryId, repositoryName);
+                        break;
+                    case "pull_request":
+                        await HandlePullRequestEventAsync(webhook, repositoryId, repositoryName);
+                        break;
+                    case "opened":
+                    case "closed":
+                    case "merged":
+                        await HandlePullRequestActionAsync(webhook, repositoryId, repositoryName);
+                        break;
+                    default:
+                        _logger.LogInformation("Unhandled webhook action: {Action}", webhook.Action);
+                        break;
+                }
+            }
+
+            // Send general processing notification
+            await _notificationService.SendSystemNotificationAsync(
+                "Webhook Processed",
+                $"Successfully processed webhook for {repositoryName}",
+                NotificationSeverity.Success);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing GitHub webhook for repository: {RepoName}", webhook.Repository?.FullName);
+            
+            await _notificationService.SendSystemNotificationAsync(
+                "Webhook Processing Error",
+                $"Failed to process webhook for {webhook.Repository?.FullName}: {ex.Message}",
+                NotificationSeverity.Error);
+            
+            return false;
+        }
+    }
+
+    private async Task HandlePushEventAsync(GitHubWebhookDto webhook, string repositoryId, string repositoryName)
+    {
+        try
+        {
+            _logger.LogInformation("Handling push event for repository: {RepositoryName}", repositoryName);
+
+            // Extract commit information if available
+            var branch = webhook.Ref?.Replace("refs/heads/", "") ?? "unknown";
+            var commitCount = 0; // This would be extracted from the webhook payload
+            var author = "Unknown"; // This would be extracted from the webhook payload
+
+            // Send commit notification
+            await _notificationService.SendCommitNotificationAsync(
+                repositoryId,
+                repositoryName,
+                "commit-hash-placeholder", // This would be from the actual commit
+                $"Push to {branch}", // This would be the actual commit message
+                author,
+                branch,
+                commitCount);
+
+            _logger.LogInformation("Push event notification sent for repository: {RepositoryName}", repositoryName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling push event for repository: {RepositoryName}", repositoryName);
+        }
+    }
+
+    private async Task HandlePullRequestEventAsync(GitHubWebhookDto webhook, string repositoryId, string repositoryName)
+    {
+        try
+        {
+            _logger.LogInformation("Handling pull request event for repository: {RepositoryName}", repositoryName);
+
+            // These would be extracted from the actual webhook payload
+            var pullRequestId = 0; // webhook.PullRequest?.Number ?? 0;
+            var title = "Pull Request"; // webhook.PullRequest?.Title ?? "Unknown";
+            var author = "Unknown"; // webhook.PullRequest?.User?.Login ?? "Unknown";
+            var action = webhook.Action ?? "opened";
+
+            // Send pull request notification
+            await _notificationService.SendPullRequestNotificationAsync(
+                repositoryId,
+                repositoryName,
+                pullRequestId,
+                title,
+                author,
+                "open", // This would be the actual status
+                action);
+
+            _logger.LogInformation("Pull request event notification sent for repository: {RepositoryName}", repositoryName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling pull request event for repository: {RepositoryName}", repositoryName);
+        }
+    }
+
+    private async Task HandlePullRequestActionAsync(GitHubWebhookDto webhook, string repositoryId, string repositoryName)
+    {
+        try
+        {
+            _logger.LogInformation("Handling pull request action '{Action}' for repository: {RepositoryName}", webhook.Action, repositoryName);
+
+            // These would be extracted from the actual webhook payload
+            var pullRequestId = 0; // webhook.PullRequest?.Number ?? 0;
+            var title = "Pull Request"; // webhook.PullRequest?.Title ?? "Unknown";
+            var author = "Unknown"; // webhook.PullRequest?.User?.Login ?? "Unknown";
+            var status = webhook.Action?.ToLower() == "merged" ? "merged" : webhook.Action?.ToLower() == "closed" ? "closed" : "open";
+
+            // Send pull request notification
+            await _notificationService.SendPullRequestNotificationAsync(
+                repositoryId,
+                repositoryName,
+                pullRequestId,
+                title,
+                author,
+                status,
+                webhook.Action ?? "unknown");
+
+            _logger.LogInformation("Pull request action notification sent for repository: {RepositoryName}", repositoryName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling pull request action for repository: {RepositoryName}", repositoryName);
+        }
     }
 
     private Task<bool> HandleAzurePullRequestEventAsync(AzureDevOpsWebhookDto webhook)
