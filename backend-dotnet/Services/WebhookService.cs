@@ -36,12 +36,6 @@ public class WebhookService : IWebhookService
             }
             else if (provider.Equals("GitHub", StringComparison.OrdinalIgnoreCase) && webhook is GitHubWebhookDto githubWebhook)
             {
-                if (!IsValidGitHubSignature(signature, JsonSerializer.Serialize(githubWebhook)))
-                {
-                    _logger.LogWarning("Invalid GitHub signature");
-                    return false;
-                }
-
                 return await ProcessWebhookAsync(githubWebhook);
             }
             else
